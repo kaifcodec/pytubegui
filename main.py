@@ -12,7 +12,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 from pytubefix import YouTube
 from android.permissions import request_permissions, Permission, check_permission
 from android.storage import app_storage_path
-from jnius import autoclass
+from jnius import autoclass, cast
 
 # Logger singleton
 class Logger:
@@ -27,7 +27,28 @@ class Logger:
 
 logger = Logger()
 
-# Fetch shared Download path using Android API
+# Check & request All Files Access
+def request_all_files_access():
+    Context = autoclass('android.content.Context')
+    Settings = autoclass('android.provider.Settings')
+    Environment = autoclass('android.os.Environment')
+    Intent = autoclass('android.content.Intent')
+    Uri = autoclass('android.net.Uri')
+    PythonActivity = autoclass('org.kivy.android.PythonActivity')
+    currentActivity = cast('android.app.Activity', PythonActivity.mActivity)
+
+    if Environment.isExternalStorageManager():
+        logger.log("✅ MANAGE_EXTERNAL_STORAGE permission already granted")
+        return True
+    else:
+        logger.log("⚠ Requesting MANAGE_EXTERNAL_STORAGE (All Files Access)")
+        intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+        uri = Uri.fromParts("package", currentActivity.getPackageName(), None)
+        intent.setData(uri)
+        currentActivity.startActivity(intent)
+        return False
+
+# Get Android shared Download path
 def get_download_dir():
     Environment = autoclass('android.os.Environment')
     return Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
@@ -53,15 +74,17 @@ class YouTubeDownloader(BoxLayout):
                                 background_color=(0,0,0,0.05), foreground_color=(0,0,0,1), cursor_width=0)
         self.add_widget(self.status)
 
-        # Use Downloads folder via Android API
+        # Setup download folder
         try:
-            self.download_dir = get_download_dir()
-            if not os.path.exists(self.download_dir):
-                os.makedirs(self.download_dir)
-            logger.log(f"Download folder: {self.download_dir}")
+            if request_all_files_access():
+                self.download_dir = get_download_dir()
+                if not os.path.exists(self.download_dir):
+                    os.makedirs(self.download_dir)
+                logger.log(f"Download folder: {self.download_dir}")
+            else:
+                raise Exception("MANAGE_EXTERNAL_STORAGE not yet granted")
         except Exception as e:
-            logger.log(f"[Error] creating download folder: {e}\n{traceback.format_exc()}")
-            # Fallback to app storage
+            logger.log(f"[Warning] Falling back to app storage due to: {e}")
             self.download_dir = app_storage_path()
 
     def update_status(self, msg):
@@ -97,7 +120,10 @@ class YouTubeDownloader(BoxLayout):
 
 class YTApp(App):
     def build(self):
-        request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE])
+        request_permissions([
+            Permission.READ_EXTERNAL_STORAGE,
+            Permission.WRITE_EXTERNAL_STORAGE,
+        ])
         return YouTubeDownloader()
 
 if __name__ == "__main__":
