@@ -7,7 +7,8 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
 from kivy.core.window import Window
-
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
 from pytubefix import YouTube
 from android.permissions import request_permissions, Permission
 from android.storage import primary_external_storage_path
