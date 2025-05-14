@@ -58,7 +58,7 @@ class SAFWriter(BoxLayout):
 
     def ask_permissions(self):
         logger.log("Requesting storage permissions...")
-        request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE])
+        request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE,Permission.MANAGE_EXTERNAL_STORAGE])
 
     @mainthread
     def append_log(self, msg):
