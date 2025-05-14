@@ -37,7 +37,7 @@ version = 1.0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy,pillow,pytubefix,saf
+requirements = python3,kivy,pillow,pytubefix,androidstorage,saf
 
 # (str) Custom source folders for requirements
 # Sets custom source for any requirements with recipes
@@ -201,7 +201,7 @@ android.accept_sdk_license = True
 #android.add_resources =
 
 # (list) Gradle dependencies to add
-#android.gradle_dependencies =
+android.gradle_dependencies = com.anggrayudi:storage:1.5.3
 
 # (bool) Enable AndroidX support. Enable when 'android.gradle_dependencies'
 # contains an 'androidx' package, or any package from Kotlin source.

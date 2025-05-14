@@ -1,156 +1,104 @@
-import os
 import traceback
-import threading
-import ssl
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
+from kivy.uix.label import Label
 from kivy.uix.popup import Popup
-from kivy.uix.progressbar import ProgressBar
-from kivy.core.window import Window
-from jnius import autoclass, cast
-
-ssl._create_default_https_context = ssl._create_unverified_context
-from pytubefix import YouTube
 from android.permissions import request_permissions, Permission
-from android.storage import app_storage_path
+from androidstorage import AndroidStorage
+from kivy.clock import mainthread
 
-# Java classes for SAF
-Intent = autoclass('android.content.Intent')
-Uri = autoclass('android.net.Uri')
-PythonActivity = autoclass('org.kivy.android.PythonActivity')
-Settings = autoclass('android.provider.Settings')
 
-# Logger singleton (unchanged)
 class Logger:
     def __init__(self):
         self.entries = []
+
     def log(self, msg):
-        entry = msg if isinstance(msg, str) else repr(msg)
+        entry = str(msg)
         self.entries.append(entry)
         print(entry)
+        if hasattr(self, "callback"):
+            self.callback(entry)
+
     def get_all(self):
         return "\n".join(self.entries)
+
+    def set_callback(self, cb):
+        self.callback = cb
+
+
 logger = Logger()
 
-class YouTubeDownloader(BoxLayout):
+
+class SAFWriter(BoxLayout):
     def __init__(self, **kwargs):
         super().__init__(orientation='vertical', padding=10, spacing=10, **kwargs)
 
-        # URL input
-        self.url_input = TextInput(hint_text="Enter YouTube URL",
-                                   size_hint_y=None, height="40dp", multiline=False)
-        self.add_widget(self.url_input)
+        self.log_display = TextInput(text="App started.\n", readonly=True, size_hint=(1, 0.7))
+        self.add_widget(self.log_display)
+        logger.set_callback(self.append_log)
 
-        # Buttons row
-        btn_row = BoxLayout(size_hint_y=None, height="50dp", spacing=10)
-        self.select_folder_btn = Button(text="Select Folder")
-        self.select_folder_btn.bind(on_press=self.select_folder)
-        btn_row.add_widget(self.select_folder_btn)
+        self.pick_btn = Button(text="Pick Folder (SAF)", size_hint=(1, 0.1))
+        self.pick_btn.bind(on_press=self.pick_folder)
+        self.add_widget(self.pick_btn)
 
-        self.download_btn = Button(text="Download MP4")
-        self.download_btn.bind(on_press=self.download_video)
-        btn_row.add_widget(self.download_btn)
+        self.write_btn = Button(text="Write File to Picked Folder", size_hint=(1, 0.1))
+        self.write_btn.bind(on_press=self.write_file)
+        self.write_btn.disabled = True
+        self.add_widget(self.write_btn)
 
-        self.view_logs_btn = Button(text="View Logs")
-        self.view_logs_btn.bind(on_press=self.show_logs)
-        btn_row.add_widget(self.view_logs_btn)
-        self.add_widget(btn_row)
+        self.uri_label = Label(text="No folder selected", size_hint=(1, 0.1))
+        self.add_widget(self.uri_label)
 
-        # Progress bar
-        self.progress = ProgressBar(max=100, value=0, size_hint_y=None, height="20dp")
-        self.add_widget(self.progress)
+        self.saf = AndroidStorage()
+        self.folder_uri = None
 
-        # Status / log area
-        self.status = TextInput(text="", readonly=True, size_hint=(1, 1),
-                                font_size="14sp", background_color=(0,0,0,0.05),
-                                foreground_color=(0,0,0,1), cursor_width=0)
-        self.add_widget(self.status)
+        self.ask_permissions()
 
-        # default download folder (app storage)
-        self.download_dir = app_storage_path()
-        logger.log(f"[App storage] Download folder: {self.download_dir}")
+    def ask_permissions(self):
+        logger.log("Requesting storage permissions...")
+        request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE])
 
-    def select_folder(self, _):
-        """ Launch SAF folder picker """
-        intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-        currentActivity = cast('android.app.Activity', PythonActivity.mActivity)
-        currentActivity.startActivityForResult(intent, 42)
-        # result will come back to on_activity_result in your PythonActivity
+    @mainthread
+    def append_log(self, msg):
+        self.log_display.text += msg + "\n"
 
-    def on_activity_result(self, requestCode, resultCode, data):
-        """ Called by PythonActivity when SAF returns """
-        if requestCode == 42 and data:
-            tree_uri = data.getData()
-            # Persist permission
-            PythonActivity.mActivity.getContentResolver().takePersistableUriPermission(
-                tree_uri, Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            # Store it
-            self.download_uri = tree_uri.toString()
-            # Show path for user
-            logger.log(f"📁 Selected folder URI: {self.download_uri}")
+    def pick_folder(self, _):
+        logger.log("Opening SAF folder picker...")
+        self.saf.choose_dir(self.on_folder_picked)
 
-    def update_status(self, msg):
-        logger.log(msg)
-        self.status.text += msg + "\n"
+    def on_folder_picked(self, uri):
+        if uri:
+            self.folder_uri = uri
+            self.uri_label.text = f"Selected URI: {uri[:40]}..."
+            logger.log(f"Folder picked: {uri}")
+            self.write_btn.disabled = False
+        else:
+            logger.log("[Warning] No folder selected.")
 
-    def show_logs(self, _):
-        popup = Popup(title="Download Logs",
-                      content=TextInput(text=logger.get_all(), readonly=True),
-                      size_hint=(0.9, 0.9))
-        popup.open()
-
-    def download_video(self, _):
-        url = self.url_input.text.strip()
-        if not url:
-            self.update_status("[Error] URL is empty.")
+    def write_file(self, _):
+        if not self.folder_uri:
+            logger.log("[Error] No folder selected to write into.")
             return
 
-        def _worker():
-            self.download_btn.disabled = True
-            self.update_status(f"Starting download: {url}")
-            try:
-                yt = YouTube(url)
-                stream = (yt.streams
-                          .filter(progressive=True, file_extension="mp4")
-                          .order_by("resolution").desc().first())
-                if not stream:
-                    self.update_status("[Error] No progressive MP4 stream found.")
-                else:
-                    # if SAF folder chosen, use URI; else fallback to path
-                    if hasattr(self, 'download_uri'):
-                        # save to temp app storage then copy via SAF...
-                        temp_path = stream.download(output_path=app_storage_path())
-                        # TODO: use ContentResolver+stream to write `temp_path` into `download_uri`
-                        self.update_status(f"Downloaded temp ▶ {temp_path}")
-                        self.update_status("⚠️ SAF copy not yet implemented.")
-                    else:
-                        final = stream.download(output_path=self.download_dir)
-                        self.update_status(f"Downloaded ▶ {final}")
-            except Exception as e:
-                tb = traceback.format_exc()
-                self.update_status(f"[Exception] {e}\n{tb}")
-            finally:
-                self.progress.value = 0
-                self.download_btn.disabled = False
+        try:
+            filename = "test_output.txt"
+            content = "This is a test file written using SAF on Android."
 
-        # reset progress bar and run
-        self.progress.value = 0
-        threading.Thread(target=_worker, daemon=True).start()
+            logger.log(f"Attempting to write '{filename}' to folder...")
+            with self.saf.open_file(self.folder_uri, filename, "w") as f:
+                f.write(content)
+            logger.log("File written successfully using SAF.")
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger.log(f"[Exception] {e}\n{tb}")
 
-class YTApp(App):
+
+class SAFApp(App):
     def build(self):
-        Window.softinput_mode = "below_target"
-        request_permissions([Permission.READ_EXTERNAL_STORAGE, Permission.WRITE_EXTERNAL_STORAGE])
-        # Hook PythonActivity to receive onActivityResult
-        PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        PythonActivity.addActivityResultListener(YouTubeDownloader.on_activity_result)
-        return YouTubeDownloader()
+        return SAFWriter()
+
 
 if __name__ == "__main__":
-    from kivy.utils import platform
-    if platform != "android":
-        Window.size = (360, 640)
-    YTApp().run()
+    SAFApp().run()
